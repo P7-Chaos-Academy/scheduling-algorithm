@@ -3,11 +3,10 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import os
 
-# Generate tasks with random costs (128, 512, or 1024) and timestamp values
-random.seed()  # Use current time as seed for true randomness
+random.seed()
 base_time = datetime.now()
 
-num_tasks = random.randint(8, 15)  # Random number of tasks between 8 and 15
+num_tasks = random.randint(20, 40)
 tasks = []
 for i in range(1, num_tasks + 1):
     task_id = f"T{i}"
@@ -15,12 +14,17 @@ for i in range(1, num_tasks + 1):
     value = (base_time + timedelta(seconds=random.randint(1, 100))).timestamp()  # random timestamp as value
     tasks.append((task_id, cost, value))
 
-# Each node has a max capacity (e.g., available compute units)
 nodes = {
-    "nano1": 2000,
-    "nano2": 2000,
-    "nano3": 2000,
-    "orin": 2000
+    "nano1": {"speed": 25, "uptime": 300},
+    "nano2": {"speed": 25, "uptime": 300},
+    "nano3": {"speed": 25, "uptime": 300},
+    "orin": {"speed":  25, "uptime": 300}
+}
+
+# Calculate effective capacity for each node
+node_capacities = {
+    node: info["speed"] * info["uptime"]
+    for node, info in nodes.items()
 }
 
 # Simulate historical runtime tracking (this would come from your database)
@@ -32,82 +36,89 @@ node_historical_runtime = {
     "orin": 0
 }
 
-def knapsack(tasks, capacity):
-    n = len(tasks)
-    dp = [[0] * (capacity + 1) for _ in range(n + 1)]
-
-    for i in range(1, n + 1):
-        cost = tasks[i-1][1]
-        value = tasks[i-1][2]
-        for w in range(1, capacity + 1):
-            if cost <= w:
-                dp[i][w] = max(value + dp[i-1][w-cost], dp[i-1][w])
-            else:
-                dp[i][w] = dp[i-1][w]
-
-    # backtrack to get chosen tasks
-    res = []
-    w = capacity
-    for i in range(n, 0, -1):
-        if dp[i][w] != dp[i-1][w]:
-            res.append(tasks[i-1])
-            w -= tasks[i-1][1]
-    return res
-
-# Round-robin scheduling with fairness
-# Sort tasks by value (descending) to prioritize high-value tasks
-sorted_tasks = sorted(tasks, key=lambda t: t[2], reverse=True)
+# Capacity-proportional fair scheduling algorithm
+# Goal: Maintain equal utilization percentage across all nodes
+# Strategy: Always assign next task to the node with LOWEST current utilization %
 
 schedule = {node: [] for node in nodes.keys()}
-node_usage = {node: 0 for node in nodes.keys()}  # Track current capacity usage
-node_list = list(nodes.keys())
+node_usage = {node: 0 for node in nodes.keys()}  # Track current capacity usage (tokens)
+remaining_tasks = tasks[:]
 
-unscheduled = []
+print(f"\nNode Capacities:")
+print(f"  nano1: {node_capacities['nano1']:,} tokens ({nodes['nano1']['speed']} tok/s × {nodes['nano1']['uptime']}s)")
+print(f"  nano2: {node_capacities['nano2']:,} tokens ({nodes['nano2']['speed']} tok/s × {nodes['nano2']['uptime']}s)")
+print(f"  nano3: {node_capacities['nano3']:,} tokens ({nodes['nano3']['speed']} tok/s × {nodes['nano3']['uptime']}s)")
+print(f"  orin:  {node_capacities['orin']:,} tokens ({nodes['orin']['speed']} tok/s × {nodes['orin']['uptime']}s)")
+print(f"  Total: {sum(node_capacities.values()):,} tokens\n")
 
-# Round-robin assignment with historical runtime consideration
-for task in sorted_tasks:
-    task_id, cost, value = task
+# Assign tasks one at a time to maintain balanced utilization
+while remaining_tasks:
+    # Sort nodes by current utilization percentage (ascending)
+    # Include historical runtime for long-term fairness
+    node_list = sorted(
+        nodes.keys(), 
+        key=lambda n: (node_usage[n] + node_historical_runtime[n]) / node_capacities[n]
+    )
+    
     assigned = False
     
-    # Try to assign to the node with the least TOTAL usage (current + historical)
-    # This promotes long-term fairness across scheduling rounds
-    # In production, node_historical_runtime would be fetched from database
-    sorted_nodes = sorted(node_list, key=lambda n: node_usage[n] + node_historical_runtime[n])
-    
-    for node in sorted_nodes:
-        if node_usage[node] + cost <= nodes[node]:
-            # Assign task to this node
-            schedule[node].append(task)
-            node_usage[node] += cost
-            assigned = True
+    # Try to assign to the node with lowest utilization
+    for node in node_list:
+        if not remaining_tasks:
             break
+        
+        # Calculate remaining capacity
+        remaining_capacity = node_capacities[node] - node_usage[node]
+        
+        if remaining_capacity <= 0:
+            continue  # Node is full
+        
+        # Find tasks that fit in remaining capacity
+        fitting_tasks = [t for t in remaining_tasks if t[1] <= remaining_capacity]
+        
+        if not fitting_tasks:
+            continue  # No tasks fit in this node
+        
+        # Simple greedy selection: pick the first task from fitting tasks
+        # (fitting_tasks are already from remaining_tasks, sorted by value)
+        best_task = fitting_tasks[0]
+        
+        schedule[node].append(best_task)
+        node_usage[node] += best_task[1]
+        remaining_tasks.remove(best_task)
+        assigned = True
+        break  # Re-evaluate which node has lowest utilization
     
     if not assigned:
-        unscheduled.append(task)
+        break  # No more tasks can be assigned
+
+unscheduled = remaining_tasks
 
 # Update historical runtime (in production, this would be written to database)
 for node in nodes.keys():
     node_historical_runtime[node] += node_usage[node]
 
 # Print results
-print("=" * 70)
-print("ROUND-ROBIN SCHEDULING RESULTS (WITH FAIRNESS)")
-print("=" * 70)
+
 for node in nodes.keys():
     tasks_in_node = schedule[node]
     total_cost = sum(t[1] for t in tasks_in_node)
     total_value = sum(t[2] for t in tasks_in_node)
-    utilization = (total_cost / nodes[node]) * 100
-    print(f"{node}: {[t[0] for t in tasks_in_node]}")
-    print(f"  ├─ Tasks: {len(tasks_in_node)}")
-    print(f"  ├─ Capacity: {total_cost}/{nodes[node]} ({utilization:.1f}%)")
+    node_info = nodes[node]
+    capacity = node_capacities[node]
+    utilization = (total_cost / capacity) * 100
+    # Calculate actual execution time
+    execution_time = total_cost / node_info["speed"] if node_info["speed"] > 0 else 0
+    
+    print(f"{node} (speed={node_info['speed']} tokens/sec, uptime={node_info['uptime']}s):")
+    print(f"  ├─ Tasks: {len(tasks_in_node)} → {[t[0] for t in tasks_in_node]}")
+    print(f"  ├─ Tokens: {total_cost}/{capacity} ({utilization:.1f}% capacity)")
+    print(f"  ├─ Execution Time: {execution_time:.1f}s / {node_info['uptime']}s available")
     print(f"  ├─ Total Value: {total_value:.2f}")
     print(f"  └─ Historical Runtime: {node_historical_runtime[node]} units")
     print()
 
 print(f"Unscheduled: {[t[0] for t in unscheduled]} ({len(unscheduled)} tasks)")
-print("=" * 70)
-print("\n💾 In production: Historical runtime would be persisted to database")
 
 # Visualization
 def visualize_schedule(schedule, nodes):
@@ -151,11 +162,9 @@ def visualize_schedule(schedule, nodes):
     
     plt.tight_layout()
     
-    # Create outputs directory if it doesn't exist
     os.makedirs("outputs", exist_ok=True)
     output_path = "outputs/knapsack_schedule.png"
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"\n✅ Visualization saved to: {output_path}")
     plt.close()
 
 visualize_schedule(schedule, nodes)

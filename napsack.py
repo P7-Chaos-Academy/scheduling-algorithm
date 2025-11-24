@@ -18,7 +18,7 @@ nodes = {
     "nano1": {"speed": 25, "uptime": 300},
     "nano2": {"speed": 25, "uptime": 300},
     "nano3": {"speed": 25, "uptime": 300},
-    "orin": {"speed":  25, "uptime": 300}
+    "orin": {"speed":  25, "uptime": 100}
 }
 
 # Calculate effective capacity for each node
